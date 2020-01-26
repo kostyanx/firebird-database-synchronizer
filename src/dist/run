@@ -1,0 +1,7 @@
+#!/bin/bash
+
+cd "$(dirname "$0")" || exit
+
+LAST_JAR="$(ls catcab-database-synchronizer-* | sort -V | tail -n 1)"
+java -Dlog4j.configurationFile="log4j2.xml" -Dlog4j.shutdownHookEnabled=false -jar "$LAST_JAR"
+
