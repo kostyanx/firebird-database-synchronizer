@@ -18,17 +18,17 @@ class SyncService @Inject constructor(
     private val dstDb: DataSourceProxy
 ) : StartShutdownHandler {
     companion object {
-        val log = LoggerFactory.getLogger(SyncService::class.java)
+        private val LOG = LoggerFactory.getLogger(SyncService::class.java)
     }
 
-    fun prepareSync() {
+    private fun prepareSync() {
         val tables = getTables()
         tables.map { it.name }.forEach(::println)
     }
 
     private fun getTables(): List<Table> {
-        return srcDb.executeRawQuery {
-            it.metaData.getTables(null, null, null, arrayOf("TABLE")).toList { it.toTable() }
+        return srcDb.executeRawQuery { conn ->
+            conn.metaData.getTables(null, null, null, arrayOf("TABLE")).toList { it.toTable() }
         }
     }
 
