@@ -99,15 +99,15 @@ object DbUtil {
         }.toMutableMap()
     }
 
-    fun <T: Any> ResultSet.toList(rowMapper: (ResultSet) -> T): List<T> {
-        return use {
+    fun <T: Any> ResultSet.toList(rowMapper: (ResultSet) -> T): MutableList<T> {
+        use {
             return generateSequence {
                 if (it.next()) {
                     rowMapper(it)
                 } else {
                     null
                 }
-            }.toList()
+            }.toMutableList()
         }
     }
 }
