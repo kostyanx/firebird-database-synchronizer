@@ -284,10 +284,10 @@ class UiService @Inject constructor(
             @Suppress("UNCHECKED_CAST")
             it as Triple<String, Int, Int>
             display.asyncExec {
-                table.items.forEachIndexed { index, item ->
+                table.items.forEach { item ->
                     if (item.getText(0) == it.first) {
                         item.setText(4, "${it.second} / ${it.third}")
-                        return@forEachIndexed
+                        return@forEach
                     }
                 }
             }
@@ -297,10 +297,10 @@ class UiService @Inject constructor(
         notifierService.subscribe("syncError") {
             if (it !is String) return@subscribe
             display.asyncExec {
-                table.items.forEachIndexed { index, item ->
+                table.items.forEach { item ->
                     if (item.getText(0) == it) {
                         item.background = display.getSystemColor(SWT.COLOR_RED)
-                        return@forEachIndexed
+                        return@forEach
                     }
                 }
             }
