@@ -16,13 +16,17 @@ before_script:
 
 build:
   stage: build
-  script: gradle --build-cache assemble
+  script: gradle --build-cache installDist
   cache:
     key: "$CI_COMMIT_REF_NAME"
     policy: push
     paths:
       - build
       - .gradle
+  artifacts:
+    name: catcab-database-synchronizer
+    paths:
+      - build/install/catcab-database-synchronizer/*
 
 test:
   stage: test

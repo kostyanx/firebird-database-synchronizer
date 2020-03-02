@@ -58,6 +58,7 @@ dependencies {
     implementation 'com.zaxxer:HikariCP:3.4.2'
     implementation 'org.firebirdsql.jdbc:jaybird:4.0.0.java11-beta-2'
     implementation 'com.google.dagger:dagger:2.26'
+    implementation 'ru.catcab:catcab-common-database:1.2.0'
 
     kapt 'com.google.dagger:dagger-compiler:2.26'
 }
@@ -73,5 +74,14 @@ jar {
     manifest {
         attributes 'Main-Class': 'ru.catcab.tool.database.synchronizer.DatabaseSynchronizerMainKt',
                 'Class-Path': configurations.runtimeClasspath.files.collect { "lib/$it.name" }.join(' ')
+    }
+}
+
+distributions {
+    main {
+        contents {
+            from 'src/dist'
+            from 'src/main/resources'
+        }
     }
 }

@@ -1,16 +1,18 @@
 package ru.catcab.tool.database.synchronizer.service
 
 import org.eclipse.swt.SWT
-import org.eclipse.swt.layout.RowData
-import org.eclipse.swt.layout.RowLayout
+import org.eclipse.swt.layout.GridData
+import org.eclipse.swt.layout.GridData.FILL
+import org.eclipse.swt.layout.GridLayout
 import org.eclipse.swt.widgets.*
 import org.slf4j.LoggerFactory
 import ru.catcab.common.dagger.StartShutdownHandler
 import ru.catcab.common.dagger.StartShutdownService
+import ru.catcab.tool.database.synchronizer.models.TableMeta
+import java.awt.Font
+import java.util.concurrent.ExecutorService
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.abs
-import kotlin.random.Random
 
 
 
@@ -19,7 +21,9 @@ import kotlin.random.Random
 @Singleton
 class UiService @Inject constructor(
     private val syncService: SyncService,
-    private val startShutdownService: StartShutdownService
+    private val startShutdownService: StartShutdownService,
+    private val executor: ExecutorService,
+    private val notifierService: NotifierService
 ) : StartShutdownHandler {
 
     object data {
@@ -27,14 +31,16 @@ class UiService @Inject constructor(
     }
 
     companion object {
-        val log = LoggerFactory.getLogger(UiService::class.java)!!
+        val LOG = LoggerFactory.getLogger(UiService::class.java)!!
     }
 
     lateinit var uiThread: Thread
     lateinit var display: Display
+    lateinit var table: Table
+    lateinit var tableMetas: List<TableMeta>
 
     private fun startUi() {
-        log.info("start catcab database synchronizer")
+        LOG.info("start catcab database synchronizer")
 
 //    val display = Display()
 //
@@ -173,12 +179,20 @@ class UiService @Inject constructor(
         val display = Display()
         this.display = display
 
-        val shell = Shell(display)
-        shell.text = "Snippet 181"
-        shell.layout = RowLayout(SWT.HORIZONTAL)
-        val table = Table(shell, SWT.BORDER or SWT.CHECK)
-        table.layoutData = RowData(-1, 300)
-        table.headerVisible = true
+        val shell = Shell(display).apply {
+            text = "Database Synchronizer"
+            layout = GridLayout(1, false)
+        }
+
+        val table = Table(shell, SWT.BORDER).apply {
+            layoutData = GridData(FILL, FILL, true, true).apply {
+                widthHint = 1000
+                heightHint = 600
+            }
+            headerVisible = true
+            font = org.eclipse.swt.graphics.Font(display, Font.SANS_SERIF, 9, SWT.NORMAL)
+        }
+        this.table = table
 
         val clickListener: (Event) -> Unit = {
             val column = it.widget as TableColumn
@@ -187,67 +201,137 @@ class UiService @Inject constructor(
         }
 
         TableColumn(table, SWT.LEFT).apply {
-            text = "Column 0 ↑ ↓ #"
+            text = "Table"
             addListener(SWT.Selection, clickListener)
         }
 
-        TableColumn(table, SWT.CENTER).apply {
-            text = "Column 1"
+        TableColumn(table, SWT.LEFT).apply {
+            text = "Primary Key"
             addListener(SWT.Selection, clickListener)
         }
 
-        TableColumn(table, SWT.CENTER).apply {
-            text = "Column 2"
+        TableColumn(table, SWT.LEFT).apply {
+            text = "Indices"
             addListener(SWT.Selection, clickListener)
         }
 
-        TableColumn(table, SWT.CENTER).apply {
-            text = "Column 3"
+        TableColumn(table, SWT.LEFT).apply {
+            text = "Triggers"
             addListener(SWT.Selection, clickListener)
         }
 
-        TableColumn(table, SWT.CENTER).apply {
-            text = "Column 4"
+        TableColumn(table, SWT.RIGHT).apply {
+            text = "Changes"
             addListener(SWT.Selection, clickListener)
         }
 
-        for (i in 0..99) {
-            val item = TableItem(table, SWT.NONE)
-            val text = arrayOf("$i 0", "$i 1", "$i ${abs(Random.nextInt() % 1000)}", "$i 3", "$i 4")
-            item.setText(text)
-        }
-
-        val listener = Listener { println("Move ${it.widget}") }
+//        val listener = Listener { println("Move ${it.widget}") }
         for (col in table.columns) {
             col.pack()
             col.moveable = true
-            col.addListener(SWT.Move, listener)
+//            col.addListener(SWT.Move, listener)
         }
 
         Button(shell, SWT.PUSH).apply {
-            text = "invert column order"
+            text = "Start sync"
+            var errors = 0;
+            notifierService.subscribe("syncError") { errors++ }
             addListener(SWT.Selection) {
-                val order = table.columnOrder
-                for (i in 0 until order.size / 2) {
-                    val temp = order[i]
-                    order[i] = order[order.size - i - 1]
-                    order[order.size - i - 1] = temp
+                enabled = false
+                table.items.forEach {
+                    it.background = table.background
+                    it.setText(4, "");
                 }
-                table.columnOrder = order
+                executor.execute {
+                    errors = 0;
+                    syncService.sync(tableMetas)
+                    LOG.info("completed")
+                    display.asyncExec {
+                        MessageBox(shell).apply {
+                            message = if (errors == 0) "completed" else "completed with $errors error(s)"
+                        }.open()
+                        enabled = true
+                    }
+                }
             }
         }
 
         shell.pack()
         shell.open()
+
+        table.columns[0].width = 150
+        table.columns[1].width = 150
+        table.columns[2].width = 300
+        table.columns[3].width = 300
+
+        asyncLoadTableInfo()
+
+        notifierService.subscribe("startSync") {
+            if (it !is String) return@subscribe
+            display.asyncExec {
+                table.items.forEachIndexed { index, item ->
+                    if (item.getText(0) == it) {
+                        table.setSelection(index)
+                        return@forEachIndexed
+                    }
+                }
+            }
+        }
+
+
+        notifierService.subscribe("syncProgress") {
+            if (it !is Triple<*, *, *>) return@subscribe
+            @Suppress("UNCHECKED_CAST")
+            it as Triple<String, Int, Int>
+            display.asyncExec {
+                table.items.forEachIndexed { index, item ->
+                    if (item.getText(0) == it.first) {
+                        item.setText(4, "${it.second} / ${it.third}")
+                        return@forEachIndexed
+                    }
+                }
+            }
+        }
+
+
+        notifierService.subscribe("syncError") {
+            if (it !is String) return@subscribe
+            display.asyncExec {
+                table.items.forEachIndexed { index, item ->
+                    if (item.getText(0) == it) {
+                        item.background = display.getSystemColor(SWT.COLOR_RED)
+                        return@forEachIndexed
+                    }
+                }
+            }
+        }
+
         while (!shell.isDisposed) {
             if (!display.readAndDispatch())
                 display.sleep()
         }
         display.dispose()
 
-        log.info("stop catcab database synchronizer")
+        LOG.info("stop catcab database synchronizer")
 
         startShutdownService.shutdown()
+    }
+
+    fun asyncLoadTableInfo() {
+        executor.execute {
+            tableMetas = syncService.getTableMetas()
+            display.asyncExec {
+                tableMetas.forEach { meta ->
+                    val t = meta.table
+                    val primaryKey = meta.primaryKey?.columns?.joinToString(",")
+                    val indices = meta.indicies.map { it.columns.joinToString(",") }.joinToString(" | ")
+                    val triggers = meta.triggers.filter { it.active && !it.isSystem }.map { it.name }.joinToString(", ")
+                    val item = TableItem(table, SWT.NONE)
+                    val text = arrayOf(t.name, primaryKey, indices, triggers, "")
+                    item.setText(text)
+                }
+            }
+        }
     }
 
     override fun start() {
@@ -261,5 +345,6 @@ class UiService @Inject constructor(
         if (::display.isInitialized && !display.isDisposed) {
             display.dispose()
         }
+        executor.shutdown()
     }
 }

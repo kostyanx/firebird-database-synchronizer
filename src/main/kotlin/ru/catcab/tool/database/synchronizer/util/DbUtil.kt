@@ -110,4 +110,17 @@ object DbUtil {
             }.toMutableList()
         }
     }
+
+    fun <T: Any> ResultSet.toListIndexed(rowMapper: (ResultSet, Int) -> T): MutableList<T> {
+        use {
+            var counter = 0;
+            return generateSequence {
+                if (it.next()) {
+                    rowMapper(it, counter++)
+                } else {
+                    null
+                }
+            }.toMutableList()
+        }
+    }
 }

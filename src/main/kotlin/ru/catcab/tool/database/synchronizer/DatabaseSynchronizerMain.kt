@@ -1,7 +1,7 @@
 package ru.catcab.tool.database.synchronizer
 
 import org.slf4j.LoggerFactory
-import ru.catcab.tool.database.synchronizer.module.DbModule
+import ru.catcab.tool.database.synchronizer.module.CommonModule
 import ru.catcab.tool.database.synchronizer.util.OS
 import ru.kostyanx.utils.Config
 import java.io.File
@@ -11,6 +11,7 @@ import java.util.jar.Manifest
 object DatabaseSynchronizerMain {
     private val LOG = LoggerFactory.getLogger(DatabaseSynchronizerMain::class.java)!!
 
+    @Suppress("UNUSED_PARAMETER", "unused")
     @JvmStatic
     fun start(args: Array<String>) {
         LOG.info("start application")
@@ -18,7 +19,7 @@ object DatabaseSynchronizerMain {
         val config = Config.init("catcab-database-synchronizer.properties", DatabaseSynchronizer::class.java)
 
         val app = DaggerDatabaseSynchronizerApp.builder()
-            .dbModule(DbModule(config))
+            .commonModule(CommonModule(config))
             .build()
 
         app.startShutdownService().scanApp(app).start()
