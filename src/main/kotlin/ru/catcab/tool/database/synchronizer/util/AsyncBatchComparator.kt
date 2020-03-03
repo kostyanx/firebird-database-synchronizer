@@ -130,9 +130,11 @@ class AsyncBatchComparator(
     }
 
     private fun onClose() {
-        while (hasNext) {
-            performDelete(keyColumns)
-            hasNext = rs.next()
+        if (!rs.isClosed) {
+            while (hasNext) {
+                performDelete(keyColumns)
+                hasNext = rs.next()
+            }
         }
         fireProgressEvent()
         MDC.remove("table")
