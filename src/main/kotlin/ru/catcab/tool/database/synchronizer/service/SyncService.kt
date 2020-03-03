@@ -20,9 +20,7 @@ import ru.kostyanx.dbproxy.ConnectionProxy
 import ru.kostyanx.dbproxy.DataSourceProxy
 import ru.kostyanx.dbproxy.DatabaseRawQuery
 import ru.kostyanx.dbproxy.TypedResultSetProcessor
-import java.sql.Connection
 import java.sql.DatabaseMetaData
-import java.sql.ResultSet
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -68,28 +66,27 @@ class SyncService @Inject constructor(
     fun sync(tableMetas: List<TableMeta>) {
         srcDb.connectionProxy.use { srcConn ->
             dstDb.connectionProxy.use { dstConn ->
-                sync(srcConn, dstConn, tableMetas)
+                dstDb.connectionProxy.use { dstConnUpdate ->
+                    sync(srcConn, dstConn, dstConnUpdate, tableMetas)
+                }
+
             }
         }
     }
 
-    private fun sync(srcConn: ConnectionProxy, dstConn: ConnectionProxy, tableMetas: List<TableMeta>) {
-//        syncData(srcConn, dstConn, tableMetas.single { it.table.name == "APIROUTECACHE" })
-//        if (2 > 1) {
-//            return
-//        }
+    private fun sync(srcConn: ConnectionProxy, dstConn: ConnectionProxy, dstConnUpdate: ConnectionProxy, tableMetas: List<TableMeta>) {
         tableMetas.filter { it.primaryKey == null }.forEach {
             LOG.warn("table without primary key will not be processed: {}", it.table.name)
         }
         tableMetas.filter { it.primaryKey != null }.forEach { tableMeta ->
             notifierService.fire("startSync", tableMeta.table.name)
             MDC.put("table", tableMeta.table.name)
-            val triggersToDeactivate = tableMeta.triggers.filter { it.active && !it.isSystem }
 
+            val triggersToDeactivate = tableMeta.triggers.filter { it.active && !it.isSystem }
             try {
                 // deactivate triggers
                 triggersToDeactivate.forEach { dstConn.deactivateTrigger(it.name) }
-                syncData(srcConn, dstConn, tableMeta)
+                syncData(srcConn, dstConn, dstConnUpdate, tableMeta)
             } catch (e: Throwable) {
                 notifierService.fire("syncError", tableMeta.table.name)
             } finally {
@@ -100,14 +97,12 @@ class SyncService @Inject constructor(
         }
     }
 
-    private fun syncData(srcConn: ConnectionProxy, dstConn: ConnectionProxy, tableMeta: TableMeta) {
+    private fun syncData(srcConn: ConnectionProxy, dstConn: ConnectionProxy, dstConnUpdate: ConnectionProxy, tableMeta: TableMeta) {
         val table = tableMeta.table
         val sortColumns = tableMeta.primaryKey!!.columns
         val sql = "SELECT * FROM ${table.name} ORDER BY " + sortColumns.joinToString(",")
-        dstConn.execute { conn: Connection ->
-            val stmt = conn.prepareStatement(sql, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_UPDATABLE);
-            val writeRs = stmt.executeQuery()
-            AsyncBatchComparator(writeRs, tableMeta, notifierService).use { asyncComparator ->
+        dstConn.executeQuery(sql, listOf<Any?>()) { writeRs ->
+            AsyncBatchComparator(tableMeta, writeRs, dstConnUpdate, notifierService).use { asyncComparator ->
                 srcConn.executeQuery(sql, listOf<Any?>()) { readRs ->
                     val batchSize = 10000
                     var read = batchSize
@@ -129,7 +124,7 @@ class SyncService @Inject constructor(
     }
 
     private fun DatabaseMetaData.getColumns(table: String): List<Column> {
-        return getColumns(null, null, table, null).toListIndexed { rs, num -> rs.toColumn(num + 1) }
+        return getColumns(null, null, table, null).toListIndexed { rs, num -> rs.toColumn(num + 1).also { if (it.isGeneratedColumn) LOG.info("$table.${it.name}") } }
     }
 
     private fun DatabaseMetaData.getIndicies(table: String): List<Index> {

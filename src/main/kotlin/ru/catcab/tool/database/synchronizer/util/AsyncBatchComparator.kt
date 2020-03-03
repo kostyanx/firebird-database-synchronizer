@@ -7,14 +7,31 @@ import ru.catcab.tool.database.synchronizer.models.TableMeta
 import ru.catcab.tool.database.synchronizer.service.NotifierService
 import ru.catcab.utils.SynHolder
 import ru.kostyanx.database.LocResultSet
+import ru.kostyanx.dbproxy.ConnectionProxy
 import java.io.Closeable
 import java.sql.ResultSet
-import java.util.*
 import java.util.concurrent.TimeUnit.SECONDS
 
-class AsyncBatchComparator(private val rs: ResultSet, private val tableMeta: TableMeta, private val notifierService: NotifierService): Closeable {
+class AsyncBatchComparator(
+    private val tableMeta: TableMeta,
+    private val rs: ResultSet,
+    val dstConn: ConnectionProxy,
+    private val notifierService: NotifierService
+): Closeable {
+    private val pk = tableMeta.primaryKey ?: throw IllegalArgumentException("primary key is null")
+    private val tableName = tableMeta.table.name
+    private val columns = tableMeta.columns.filter { pk.columns.contains(it.name) || !it.isGeneratedColumn }
+    private val cols = columns.map { it.name }
+    private val columnMap = columns.associateBy { it.name }
+    private val keyColumns = pk.columns.map { columnMap[it] ?: error("invalid column") }
+    private val noKeyColumns = if (keyColumns.size < columns.size) columns.filter { !keyColumns.contains(it) } else emptyList()
+
+    private val deleteSql = "DELETE FROM $tableName WHERE ${pk.columns.joinToString(" AND ") { "$it = ?" }}"
+    private val insertSql = "INSERT INTO $tableName (${cols.joinToString(",")}) VALUES (${cols.joinToString(",") {"?"}})"
+
     private val asyncBatchExecutor = AsyncBatchExecutor(LOG, this::compare, this::onClose, 60, SECONDS)
-    private var hasNext = false
+
+    private var hasNext = rs.next()
     private var changes = 0
     private var total = 0
 
@@ -35,14 +52,15 @@ class AsyncBatchComparator(private val rs: ResultSet, private val tableMeta: Tab
     }
 
     private fun equalsByColumns(rs: ResultSet, lrs: LocResultSet<out LocResultSet<*>>, columns: List<Column>): Boolean {
-        columns.forEach{ column ->
+        for (column in columns) {
             val rsVal = rs.getObject(column.ordinal)
             val lrsVal = lrs.getObject(column.ordinal - 1)
-            if (rsVal is ByteArray && lrsVal is ByteArray) {
-                if (!rsVal.contentEquals(lrsVal)) {
-                    return false
-                }
-            } else if (!Objects.equals(rsVal, lrsVal)) {
+
+            if (rsVal is ByteArray && lrsVal is ByteArray && rsVal contentEquals lrsVal) {
+                continue
+            }
+
+            if (rsVal != lrsVal) {
                 return false
             }
         }
@@ -52,46 +70,25 @@ class AsyncBatchComparator(private val rs: ResultSet, private val tableMeta: Tab
     private fun compare(lrs: LocResultSet<out LocResultSet<*>>) {
         MDC.put("table", tableMeta.table.name)
         LOG.info("compare() lrs.size: {}", lrs.size())
-        val columns = tableMeta.columns
-        val columnMap = columns.associateBy { it.name }
-        val keyColumns = tableMeta.primaryKey!!.columns.map { columnMap[it] ?: error("invalid column") }
-        val noKeyColumns = if (keyColumns.size < columns.size) columns.filter { !keyColumns.contains(it) } else emptyList()
-        if (rs.isBeforeFirst) hasNext = rs.next()
         var counter = 0
         while(hasNext && lrs.next()) {
             MDC.put("counter", counter++.toString())
             val result = compareByColumns(rs, lrs, keyColumns)
             when {
                 result < 0 -> {
-                    LOG.info("delete")
-                    rs.deleteRow()
-                    changes++
+                    performDelete(keyColumns)
+                    rs.next()
                 }
-                result > 0 -> {
-                    LOG.info("insert")
-                    rs.moveToInsertRow()
-                    columns.filter { !it.isGeneratedColumn }.forEach { column ->
-                        rs.updateObject(column.ordinal, lrs.getObject(column.ordinal - 1));
-                    }
-                    rs.insertRow()
-                    changes++
-                    rs.moveToCurrentRow()
-                    hasNext = rs.next()
-                }
+                result > 0 -> performInsert(lrs)
                 result == 0 -> {
                     if (!equalsByColumns(rs, lrs, noKeyColumns)) {
-                        LOG.info("update")
                         val changedColumns = noKeyColumns.map { column ->
                             val rsVal = rs.getObject(column.ordinal)
                             val lrsVal = lrs.getObject(column.ordinal - 1)
                             Triple(rsVal, lrsVal, column)
-                        }.toList()
+                        }.filter { it.first != it.second }
                         if (changedColumns.isNotEmpty()) {
-                            changedColumns.forEach {
-                                rs.updateObject(it.third.ordinal, it.second)
-                            }
-                            rs.updateRow()
-                            changes++
+                            performUpdate(changedColumns)
                         }
                     }
                     hasNext = rs.next()
@@ -100,13 +97,7 @@ class AsyncBatchComparator(private val rs: ResultSet, private val tableMeta: Tab
         }
         if (!hasNext) {
             while (lrs.next()) {
-                LOG.info("insert")
-                rs.moveToInsertRow()
-                columns.forEachIndexed { index, column ->
-                    rs.updateObject(column.ordinal, lrs.getObject(index));
-                }
-                rs.insertRow()
-                changes++
+                performInsert(lrs)
             }
         }
         total += lrs.size()
@@ -114,11 +105,33 @@ class AsyncBatchComparator(private val rs: ResultSet, private val tableMeta: Tab
         MDC.remove("counter")
     }
 
+    private fun performDelete(keyColumns: List<Column>) {
+        LOG.info("delete")
+        dstConn.executeUpdate(deleteSql, keyColumns.map { rs.getObject(it.ordinal) })
+        changes++
+    }
+
+    private fun performInsert(lrs: LocResultSet<out LocResultSet<*>>) {
+        LOG.info("insert")
+        dstConn.executeInsert2(insertSql, columns.map { lrs.getObject(it.ordinal - 1) })
+        changes++
+    }
+
+    private fun performUpdate(changedColumns: List<Triple<Any, Any, Column>>) {
+        LOG.info("update")
+        val updateColumns = changedColumns.map { it.third.name }
+        val updateSql = "UPDATE $tableName SET ${updateColumns.joinToString(",") { "$it = ?" }}" +
+                " WHERE ${pk.columns.joinToString(" AND ") { "$it = ?" }}"
+        val params = ArrayList<Any?>()
+        params.addAll(changedColumns.map { it.second })
+        params.addAll(keyColumns.map { rs.getObject(it.ordinal) })
+        dstConn.executeUpdate(updateSql, params)
+        changes++
+    }
+
     private fun onClose() {
         while (hasNext) {
-            LOG.info("delete")
-            rs.deleteRow()
-            changes++
+            performDelete(keyColumns)
             hasNext = rs.next()
         }
         fireProgressEvent()

@@ -26,7 +26,7 @@ object DbUtil {
         val port = asInt("port", 3050)
         val dbName = asString("dbname")
 
-        val connectionString = "jdbc:firebird://$host:$port/$dbName"
+        val connectionString = "jdbc:firebirdsql://$host:$port/$dbName"
 
         val newPoolName = asString("pool.name", nextPoolName())
         val pid = ProcessHandle.current().pid().toString()

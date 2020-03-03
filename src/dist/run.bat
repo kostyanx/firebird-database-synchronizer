@@ -1,3 +1,3 @@
 @echo on
 
-java -jar catcab-database-synchronizer.jar
+java -Xmx512m -jar catcab-database-synchronizer-1.0.0.jar
