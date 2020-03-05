@@ -79,8 +79,8 @@ class SyncService @Inject constructor(
             LOG.warn("table without primary key will not be processed: {}", it.table.name)
         }
         tableMetas.filter { it.primaryKey != null }.forEach { tableMeta ->
-            notifierService.fire("startSync", tableMeta.table.name)
             MDC.put("table", tableMeta.table.name)
+            notifierService.fire("startSync", tableMeta.table.name)
 
             val triggersToDeactivate = tableMeta.triggers.filter { it.active && !it.isSystem }
             try {

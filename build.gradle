@@ -9,8 +9,8 @@ buildscript {
 
 plugins {
     id 'java'
-    id 'org.jetbrains.kotlin.jvm' version '1.3.70-eap-208'
-    id 'org.jetbrains.kotlin.kapt' version '1.3.70-eap-208'
+    id 'org.jetbrains.kotlin.jvm' version '1.3.70'
+    id 'org.jetbrains.kotlin.kapt' version '1.3.70'
     id 'java-library-distribution'
     id 'idea'
 }
@@ -30,9 +30,6 @@ repositories {
     mavenLocal()
     maven {
         url 'https://catcab.ru:444/repository/maven-releases/'
-    }
-    maven {
-        url 'https://dl.bintray.com/kotlin/kotlin-dev/'
     }
 }
 
@@ -56,7 +53,7 @@ dependencies {
     implementation 'ru.catcab:catcab-common-dagger:1.0.3'
     implementation 'ru.catcab:catcab-common-utils:1.3.0'
     implementation 'com.zaxxer:HikariCP:3.4.2'
-    implementation 'org.firebirdsql.jdbc:jaybird:4.0.0.java11-beta-2'
+    implementation 'org.firebirdsql.jdbc:jaybird-jdk18:3.0.8'
     implementation 'com.google.dagger:dagger:2.26'
     implementation 'ru.catcab:catcab-common-database:1.2.0'
 

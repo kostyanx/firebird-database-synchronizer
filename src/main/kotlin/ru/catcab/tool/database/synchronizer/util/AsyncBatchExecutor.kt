@@ -48,19 +48,18 @@ open class AsyncBatchExecutor<T>(
     }
 
     override fun close() {
-        if (onClose != null && lastError == null) {
-            executor.execute {
-                runCatching(onClose).onFailure { ex ->
-                    logger.error("error on execute batch:", ex)
-                    lastError = ex
-                }
-            }
-        }
-        executor.shutdown()
         try {
-            executor.awaitTermination(lastTaskTimeout, lastTaskUnit)
-        } catch (ignored: InterruptedException) {
+            lastError?.also { throw it }
+            if (onClose != null && lastError == null) {
+                executor.submit(onClose).get()
+            }
+        } finally {
+            executor.shutdown()
+            try {
+                executor.awaitTermination(lastTaskTimeout, lastTaskUnit)
+            } catch (ignored: InterruptedException) { }
         }
-        lastError?.also { throw it }
+
+
     }
 }

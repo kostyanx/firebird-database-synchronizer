@@ -17,7 +17,7 @@ class AsyncBatchComparator(
     private val rs: ResultSet,
     val dstConn: ConnectionProxy,
     private val notifierService: NotifierService
-): Closeable {
+) : Closeable {
     private val pk = tableMeta.primaryKey ?: throw IllegalArgumentException("primary key is null")
     private val tableName = tableMeta.table.name
     private val columns = tableMeta.columns.filter { pk.columns.contains(it.name) || !it.isGeneratedColumn }
@@ -31,7 +31,7 @@ class AsyncBatchComparator(
 
     private val asyncBatchExecutor = AsyncBatchExecutor(LOG, this::compare, this::onClose, 60, SECONDS)
 
-    private var hasNext = rs.next()
+    private var rsHasValue = rs.next()
     private var changes = 0
     private var total = 0
 
@@ -45,6 +45,7 @@ class AsyncBatchComparator(
             val lrsVal = lrs.getObject(column.ordinal - 1)
             val result = compareValues(rsVal as Comparable<*>?, lrsVal as Comparable<*>?)
             if (result != 0) {
+                LOG.info("not equals by column: {}, rsVal: {} {} lrsVal: {}", column.name, rsVal, result.toComparingSign(), lrsVal)
                 return result;
             }
         }
@@ -61,6 +62,7 @@ class AsyncBatchComparator(
             }
 
             if (rsVal != lrsVal) {
+                LOG.info("not equals by column: {}, rsVal: {} lrsVal: {}", column.name, rsVal, lrsVal)
                 return false
             }
         }
@@ -68,18 +70,22 @@ class AsyncBatchComparator(
     }
 
     private fun compare(lrs: LocResultSet<out LocResultSet<*>>) {
-        MDC.put("table", tableMeta.table.name)
+        MDC.put("table", tableName)
         LOG.info("compare() lrs.size: {}", lrs.size())
         var counter = 0
-        while(hasNext && lrs.next()) {
+        var lrsHasValue = lrs.next()
+        while (rsHasValue && lrsHasValue) {
             MDC.put("counter", counter++.toString())
             val result = compareByColumns(rs, lrs, keyColumns)
             when {
                 result < 0 -> {
                     performDelete(keyColumns)
-                    rs.next()
+                    rsHasValue = rs.next()
                 }
-                result > 0 -> performInsert(lrs)
+                result > 0 -> {
+                    performInsert(lrs)
+                    lrsHasValue = lrs.next()
+                }
                 result == 0 -> {
                     if (!equalsByColumns(rs, lrs, noKeyColumns)) {
                         val changedColumns = noKeyColumns.map { column ->
@@ -91,13 +97,20 @@ class AsyncBatchComparator(
                             performUpdate(changedColumns)
                         }
                     }
-                    hasNext = rs.next()
+                    lrsHasValue = lrs.next()
+                    rsHasValue = rs.next()
                 }
             }
+            if (counter % 100 == 0) {
+                fireProgressEvent(counter)
+            }
         }
-        if (!hasNext) {
-            while (lrs.next()) {
-                performInsert(lrs)
+        while (lrsHasValue) {
+            MDC.put("counter", counter++.toString())
+            performInsert(lrs)
+            lrsHasValue = lrs.next()
+            if (counter % 100 == 0) {
+                fireProgressEvent(counter)
             }
         }
         total += lrs.size()
@@ -106,19 +119,19 @@ class AsyncBatchComparator(
     }
 
     private fun performDelete(keyColumns: List<Column>) {
-        LOG.info("delete")
+        LOG.info("delete by key: {}", keyColumns.joinToString { "${it.name} = ${rs.getObject(it.ordinal)}" })
         dstConn.executeUpdate(deleteSql, keyColumns.map { rs.getObject(it.ordinal) })
         changes++
     }
 
     private fun performInsert(lrs: LocResultSet<out LocResultSet<*>>) {
-        LOG.info("insert")
+        LOG.info("insert with key: {}", keyColumns.joinToString { "${it.name} = ${lrs.getObject(it.ordinal - 1)}" })
         dstConn.executeInsert2(insertSql, columns.map { lrs.getObject(it.ordinal - 1) })
         changes++
     }
 
     private fun performUpdate(changedColumns: List<Triple<Any, Any, Column>>) {
-        LOG.info("update")
+        LOG.info("update by key: {}", keyColumns.joinToString { "${it.name} = ${rs.getObject(it.ordinal)}" })
         val updateColumns = changedColumns.map { it.third.name }
         val updateSql = "UPDATE $tableName SET ${updateColumns.joinToString(",") { "$it = ?" }}" +
                 " WHERE ${pk.columns.joinToString(" AND ") { "$it = ?" }}"
@@ -131,9 +144,9 @@ class AsyncBatchComparator(
 
     private fun onClose() {
         if (!rs.isClosed) {
-            while (hasNext) {
+            while (rsHasValue) {
                 performDelete(keyColumns)
-                hasNext = rs.next()
+                rsHasValue = rs.next()
             }
         }
         fireProgressEvent()
@@ -141,7 +154,11 @@ class AsyncBatchComparator(
     }
 
     private fun fireProgressEvent() {
-        notifierService.fire("syncProgress", Triple(tableMeta.table.name, changes, total))
+        fireProgressEvent(0)
+    }
+
+    private fun fireProgressEvent(totalDiff: Int) {
+        notifierService.fire("syncProgress", Triple(tableMeta.table.name, changes, total + totalDiff))
     }
 
     fun submit(holder: SynHolder<out LocResultSet<out LocResultSet<*>>>) {
@@ -149,4 +166,15 @@ class AsyncBatchComparator(
     }
 
     override fun close() = asyncBatchExecutor.close()
+
+    private fun Int.toComparingSign(): Char {
+        return when {
+            this < 0 -> '<'
+            this == 0 -> '='
+            this > 0 -> '>'
+            else -> throw IllegalStateException("is not a number?")
+        }
+    }
 }
+
+
