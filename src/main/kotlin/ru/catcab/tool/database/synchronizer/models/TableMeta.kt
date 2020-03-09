@@ -5,6 +5,7 @@ class TableMeta(
     val columns: List<Column>,
     val primaryKey: PrimaryKey?,
     val indicies: List<Index>,
-    val triggers: List<Trigger>
+    val triggers: List<Trigger>,
+    val foreignKeys: List<String>
 ) {
 }

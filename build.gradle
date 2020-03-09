@@ -20,6 +20,7 @@ version '1.0.0'
 
 //noinspection GroovyUnusedAssignment
 sourceCompatibility = 13
+//noinspection GroovyUnusedAssignment
 targetCompatibility = 13
 
 compileJava.options.encoding = 'UTF-8'
@@ -45,8 +46,8 @@ dependencies {
     implementation 'org.jetbrains.kotlin:kotlin-stdlib-jdk8'
     implementation 'org.slf4j:slf4j-api:1.7.30'
     implementation 'ru.catcab:catcab-common-dbproxy:1.1.0'
-    implementation 'org.eclipse.platform:org.eclipse.swt.win32.win32.x86_64:3.113.0'
     implementation 'org.eclipse.platform:org.eclipse.swt.gtk.linux.x86_64:3.113.0'
+    implementation 'org.eclipse.platform:org.eclipse.swt.win32.win32.x86_64:3.113.0'
     implementation 'org.apache.logging.log4j:log4j-api:2.13.0'
     implementation 'org.apache.logging.log4j:log4j-core:2.13.0'
     implementation 'org.apache.logging.log4j:log4j-slf4j-impl:2.13.0'
@@ -75,6 +76,7 @@ jar {
 }
 
 distributions {
+    //noinspection GroovyAssignabilityCheck
     main {
         contents {
             from 'src/dist'

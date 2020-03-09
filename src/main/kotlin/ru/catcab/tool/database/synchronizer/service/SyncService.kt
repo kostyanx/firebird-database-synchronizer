@@ -1,5 +1,6 @@
 package ru.catcab.tool.database.synchronizer.service
 
+import org.intellij.lang.annotations.Language
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import ru.catcab.common.dagger.StartShutdownHandler
@@ -30,14 +31,24 @@ class SyncService @Inject constructor(
     @Named("database.source")
     private val srcDb: DataSourceProxy,
     @Named("database.destination")
-    private val dstDb: DataSourceProxy,
-    private val notifierService: NotifierService
+    private val dstDb: DataSourceProxy
 ) : StartShutdownHandler {
     companion object {
         private val LOG = LoggerFactory.getLogger(SyncService::class.java)
+        @Language("GenericSQL")
         private const val SELECT_TRIGGERS_SQL = "SELECT * FROM RDB\$TRIGGERS WHERE RDB\$RELATION_NAME = ?"
+        @Language("GenericSQL")
         private const val ACTIVATE_TRIGGER_SQL = "ALTER TRIGGER {trigger} ACTIVE"
+        @Language("GenericSQL")
         private const val DEACTIVATE_TRIGGER_SQL = "ALTER TRIGGER {trigger} INACTIVE"
+        @Language("GenericSQL")
+        private const val ACTIVATE_INDEX_SQL = "ALTER INDEX {index} ACTIVE"
+        @Language("GenericSQL")
+        private const val DEACTIVATE_INDEX_SQL = "ALTER INDEX {index} INACTIVE"
+        @Language("GenericSQL")
+        private const val SELECT_FOREIGN_KEYS_SQL = "SELECT rtrim(R.RDB\$CONSTRAINT_NAME) AS CONSTRAINT_NAME" +
+                " FROM RDB\$RELATION_CONSTRAINTS R" +
+                " WHERE (R.RDB\$CONSTRAINT_TYPE='FOREIGN KEY')"
     }
 
     fun getTableMetas() = srcDb.executeQueryAc { it.getTableMetas() }!!
@@ -52,61 +63,95 @@ class SyncService @Inject constructor(
                     metaData.getColumns(table.name),
                     metaData.getPrimaryKey(table.name),
                     metaData.getIndicies(table.name),
-                    getTriggers(table.name)
+                    getTriggers(table.name),
+                    getForeignKeys()
                 )
             }
         })
     }
 
-    fun sync() {
+    fun sync(syncOptions: SyncOptions) {
         val tableMetas = srcDb.executeQuery { it.getTableMetas() }
-        sync(tableMetas)
+        sync(tableMetas, syncOptions)
     }
 
-    fun sync(tableMetas: List<TableMeta>) {
+    fun sync(tableMetas: List<TableMeta>, syncOptions: SyncOptions) {
         srcDb.connectionProxy.use { srcConn ->
             dstDb.connectionProxy.use { dstConn ->
                 dstDb.connectionProxy.use { dstConnUpdate ->
-                    sync(srcConn, dstConn, dstConnUpdate, tableMetas)
+                    sync(srcConn, dstConn, dstConnUpdate, tableMetas, syncOptions)
                 }
-
             }
         }
     }
 
-    private fun sync(srcConn: ConnectionProxy, dstConn: ConnectionProxy, dstConnUpdate: ConnectionProxy, tableMetas: List<TableMeta>) {
+    private fun sync(
+        srcConn: ConnectionProxy,
+        dstConn: ConnectionProxy,
+        dstConnUpdate: ConnectionProxy,
+        tableMetas: List<TableMeta>,
+        syncOptions: SyncOptions
+    ) {
         tableMetas.filter { it.primaryKey == null }.forEach {
             LOG.warn("table without primary key will not be processed: {}", it.table.name)
         }
         tableMetas.filter { it.primaryKey != null }.forEach { tableMeta ->
             MDC.put("table", tableMeta.table.name)
-            notifierService.fire("startSync", tableMeta.table.name)
-
-            val triggersToDeactivate = tableMeta.triggers.filter { it.active && !it.isSystem }
+            val syncMetrics = SyncStats(System.currentTimeMillis(), tableMeta.table.name, "0 / 0")
+            syncOptions.statListener(syncMetrics)
             try {
-                // deactivate triggers
-                triggersToDeactivate.forEach { dstConn.deactivateTrigger(it.name) }
-                syncData(srcConn, dstConn, dstConnUpdate, tableMeta)
+                syncTable(tableMeta, dstConn, srcConn, dstConnUpdate, syncOptions, syncMetrics)
             } catch (e: Throwable) {
-                notifierService.fire("syncError", tableMeta.table.name)
+                syncOptions.errorListener(tableMeta.table.name, e)
+                LOG.error("sync table ${tableMeta.table.name} error:", e)
             } finally {
-                // activate triggers
-                triggersToDeactivate.forEach { dstConn.activateTrigger(it.name) }
                 MDC.remove("table")
             }
+
         }
     }
 
-    private fun syncData(srcConn: ConnectionProxy, dstConn: ConnectionProxy, dstConnUpdate: ConnectionProxy, tableMeta: TableMeta) {
+    private fun syncTable(
+        tableMeta: TableMeta,
+        dstConn: ConnectionProxy,
+        srcConn: ConnectionProxy,
+        dstConnUpdate: ConnectionProxy,
+        syncOptions: SyncOptions,
+        syncStats: SyncStats
+    ) {
+        val pk = tableMeta.primaryKey!!
+        val indices = tableMeta.indicies.filter { it.name != null && it.columns != pk.columns && it.name !in tableMeta.foreignKeys }
+        val triggers = tableMeta.triggers.filter { it.active && !it.isSystem }
+
+        if (syncOptions.deactivateTriggers) deactivateTriggers(triggers, dstConn)
+        if (syncOptions.deactivateIndices) deactivateIndices(indices, dstConn)
+        try {
+            syncData(srcConn, dstConn, dstConnUpdate, tableMeta, syncOptions, syncStats)
+        } catch (e: Throwable) {
+            LOG.error("sync table ${tableMeta.table.name} data error:", e)
+            throw e
+        } finally {
+            if (syncOptions.deactivateIndices) activateIndices(indices, dstConn)
+            if (syncOptions.deactivateTriggers) activateTriggers(triggers, dstConn)
+        }
+    }
+
+    private fun syncData(
+        srcConn: ConnectionProxy,
+        dstConn: ConnectionProxy,
+        dstConnUpdate: ConnectionProxy,
+        tableMeta: TableMeta,
+        syncOptions: SyncOptions,
+        syncStats: SyncStats
+    ) {
         val table = tableMeta.table
         val sortColumns = tableMeta.primaryKey!!.columns
         val sql = "SELECT * FROM ${table.name} ORDER BY " + sortColumns.joinToString(",")
         dstConn.executeQuery(sql, listOf<Any?>()) { writeRs ->
-            AsyncBatchComparator(tableMeta, writeRs, dstConnUpdate, notifierService).use { asyncComparator ->
+            AsyncBatchComparator(tableMeta, writeRs, dstConnUpdate, syncOptions, syncStats).use { asyncComparator ->
                 srcConn.executeQuery(sql, listOf<Any?>()) { readRs ->
                     val batchSize = 10000
-                    var read = batchSize
-                    while (read == batchSize)
+                    var read: Int
                     do {
                         val holder = SynHolder.create {
                             LocalResultSet().also { it.fetch(readRs, batchSize) }
@@ -119,12 +164,18 @@ class SyncService @Inject constructor(
         }
     }
 
+    private fun ConnectionProxy.getForeignKeys(): List<String> {
+        return executeQueryList(SELECT_FOREIGN_KEYS_SQL, listOf<Any>()) { it.getString(1) }
+    }
+
     private fun DatabaseMetaData.getTables(): List<Table> {
         return getTables(null, null, null, arrayOf("TABLE")).toList { it.toTable() }
     }
 
     private fun DatabaseMetaData.getColumns(table: String): List<Column> {
-        return getColumns(null, null, table, null).toListIndexed { rs, num -> rs.toColumn(num + 1).also { if (it.isGeneratedColumn) LOG.info("$table.${it.name}") } }
+        return getColumns(null, null, table, null).toListIndexed { rs, num ->
+            rs.toColumn(num + 1)
+        }
     }
 
     private fun DatabaseMetaData.getIndicies(table: String): List<Index> {
@@ -141,14 +192,69 @@ class SyncService @Inject constructor(
         })
     }
 
+    private fun activateIndices(
+        indices: List<Index>,
+        dstConn: ConnectionProxy
+    ) {
+        indices.forEach { index ->
+            try {
+                LOG.debug("activate index: {}", index.name)
+                dstConn.activateIndex(index.name!!)
+            } catch (e: Throwable) {
+                LOG.debug("can't activate index: {}", index, e)
+            }
+        }
+    }
+
+    private fun deactivateIndices(
+        indices: List<Index>,
+        dstConn: ConnectionProxy
+    ) {
+        indices.forEach { index ->
+            try {
+                LOG.debug("deactivate index: {}", index.name)
+                dstConn.deactivateIndex(index.name!!)
+            } catch (e: Throwable) {
+                LOG.debug("can't deactivate index: {}", index, e)
+            }
+        }
+    }
+
+    private fun activateTriggers(
+        triggers: List<Trigger>,
+        dstConn: ConnectionProxy
+    ) {
+        triggers.forEach {
+            LOG.debug("deactivate trigger: {}", it.name)
+            dstConn.activateTrigger(it.name)
+        }
+    }
+
+    private fun deactivateTriggers(
+        triggers: List<Trigger>,
+        dstConn: ConnectionProxy
+    ) {
+        triggers.forEach {
+            LOG.debug("deactivate trigger: {}", it.name)
+            dstConn.deactivateTrigger(it.name)
+        }
+    }
+
+
     private fun ConnectionProxy.activateTrigger(name: String) {
-        LOG.info("activate trigger: {}", name)
         execute(ACTIVATE_TRIGGER_SQL.replace("{trigger}", name))
     }
 
     private fun ConnectionProxy.deactivateTrigger(name: String) {
-        LOG.info("deactivate trigger: {}", name)
         execute(DEACTIVATE_TRIGGER_SQL.replace("{trigger}", name))
+    }
+
+    private fun ConnectionProxy.activateIndex(name: String) {
+        execute(ACTIVATE_INDEX_SQL.replace("{index}", name))
+    }
+
+    private fun ConnectionProxy.deactivateIndex(name: String) {
+        execute(DEACTIVATE_INDEX_SQL.replace("{index}", name))
     }
 
     override fun shutdown() {

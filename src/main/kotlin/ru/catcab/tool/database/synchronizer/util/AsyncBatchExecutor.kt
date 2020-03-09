@@ -4,6 +4,7 @@ import org.slf4j.Logger
 import ru.catcab.utils.SynHolder
 import ru.kostyanx.utils.NamedThreadFactory.named
 import ru.kostyanx.utils.SafeExecutor
+import java.util.concurrent.Callable
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors.newSingleThreadExecutor
 import java.util.concurrent.Future
@@ -42,7 +43,7 @@ open class AsyncBatchExecutor<T>(
         try {
             task(subject)
         } catch (e: Throwable) {
-            lastError = e;
+            lastError = e
             logger.error("error on execute batch:", e)
         }
     }
@@ -51,7 +52,7 @@ open class AsyncBatchExecutor<T>(
         try {
             lastError?.also { throw it }
             if (onClose != null && lastError == null) {
-                executor.submit(onClose).get()
+                executor.submit(Callable { runCatching(onClose) }).get().onFailure { throw it }
             }
         } finally {
             executor.shutdown()
@@ -59,7 +60,5 @@ open class AsyncBatchExecutor<T>(
                 executor.awaitTermination(lastTaskTimeout, lastTaskUnit)
             } catch (ignored: InterruptedException) { }
         }
-
-
     }
 }

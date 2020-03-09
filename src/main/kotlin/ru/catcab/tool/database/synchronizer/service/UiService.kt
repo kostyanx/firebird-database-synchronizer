@@ -8,22 +8,21 @@ import org.eclipse.swt.widgets.*
 import org.slf4j.LoggerFactory
 import ru.catcab.common.dagger.StartShutdownHandler
 import ru.catcab.common.dagger.StartShutdownService
+import ru.catcab.tool.database.synchronizer.models.SyncOptions
+import ru.catcab.tool.database.synchronizer.models.SyncStats
 import ru.catcab.tool.database.synchronizer.models.TableMeta
 import java.awt.Font
 import java.util.concurrent.ExecutorService
 import javax.inject.Inject
 import javax.inject.Singleton
-
-
-
+import kotlin.math.min
 
 
 @Singleton
 class UiService @Inject constructor(
     private val syncService: SyncService,
     private val startShutdownService: StartShutdownService,
-    private val executor: ExecutorService,
-    private val notifierService: NotifierService
+    private val executor: ExecutorService
 ) : StartShutdownHandler {
 
     object data {
@@ -38,6 +37,9 @@ class UiService @Inject constructor(
     lateinit var display: Display
     lateinit var table: Table
     lateinit var tableMetas: List<TableMeta>
+
+    var currentRow = -1
+    var errors = 0
 
     private fun startUi() {
         LOG.info("start catcab database synchronizer")
@@ -232,25 +234,40 @@ class UiService @Inject constructor(
 //            col.addListener(SWT.Move, listener)
         }
 
+        val cbDisableIndices = Button(shell, SWT.CHECK).apply {
+            text = "Disable indices during sync"
+        }
+
         Button(shell, SWT.PUSH).apply {
             text = "Start sync"
-            var errors = 0;
-            notifierService.subscribe("syncError") { errors++ }
+            errors = 0
+
             addListener(SWT.Selection) {
+                cbDisableIndices.enabled = false
                 enabled = false
+                val disableIndices = cbDisableIndices.selection
                 table.items.forEach {
                     it.background = table.background
-                    it.setText(4, "");
+                    it.setText(4, "")
                 }
                 executor.execute {
-                    errors = 0;
-                    syncService.sync(tableMetas)
+                    errors = 0
+                    val start = System.currentTimeMillis()
+                    syncService.sync(tableMetas, SyncOptions(
+                        deactivateIndices = disableIndices,
+                        deactivateTriggers = true,
+                        statListener = ::processMetrics,
+                        errorListener = ::processError
+                    ))
                     LOG.info("completed")
+                    val time = System.currentTimeMillis() - start
                     display.asyncExec {
+                        val timeStr = "${time / 60_000}m ${time / 1000 % 60}s"
                         MessageBox(shell).apply {
-                            message = if (errors == 0) "completed" else "completed with $errors error(s)"
+                            message = if (errors == 0) "completed, time: $timeStr" else "completed with $errors error(s), time: $timeStr"
                         }.open()
                         enabled = true
+                        cbDisableIndices.enabled = true
                     }
                 }
             }
@@ -266,46 +283,6 @@ class UiService @Inject constructor(
 
         asyncLoadTableInfo()
 
-        notifierService.subscribe("startSync") {
-            if (it !is String) return@subscribe
-            display.asyncExec {
-                table.items.forEachIndexed { index, item ->
-                    if (item.getText(0) == it) {
-                        table.setSelection(index)
-                        return@forEachIndexed
-                    }
-                }
-            }
-        }
-
-
-        notifierService.subscribe("syncProgress") {
-            if (it !is Triple<*, *, *>) return@subscribe
-            @Suppress("UNCHECKED_CAST")
-            it as Triple<String, Int, Int>
-            display.asyncExec {
-                table.items.forEach { item ->
-                    if (item.getText(0) == it.first) {
-                        item.setText(4, "${it.second} / ${it.third}")
-                        return@forEach
-                    }
-                }
-            }
-        }
-
-
-        notifierService.subscribe("syncError") {
-            if (it !is String) return@subscribe
-            display.asyncExec {
-                table.items.forEach { item ->
-                    if (item.getText(0) == it) {
-                        item.background = display.getSystemColor(SWT.COLOR_RED)
-                        return@forEach
-                    }
-                }
-            }
-        }
-
         while (!shell.isDisposed) {
             if (!display.readAndDispatch())
                 display.sleep()
@@ -315,6 +292,52 @@ class UiService @Inject constructor(
         LOG.info("stop catcab database synchronizer")
 
         startShutdownService.shutdown()
+    }
+
+    fun getItemFor(tableName: String): TableItem {
+        val itemCount = table.itemCount
+        if (currentRow != -1 && itemCount > currentRow) {
+            val item = table.getItem(currentRow)
+            if (item.getText(0) == tableName) {
+                return item
+            }
+            val currentRowPlus11 = min(currentRow + 11, itemCount)
+            for (index in currentRow + 1 until currentRowPlus11) {
+                val found = table.getItem(index)
+                if (found.getText(0) == tableName) {
+                    currentRow = index
+                    return found
+                }
+            }
+        }
+        for ((index, item) in table.items.withIndex()) {
+            if (item.getText(0) == tableName) {
+                currentRow = index
+                return item
+            }
+        }
+        throw NoSuchElementException("item for table $tableName not found")
+    }
+
+    fun processMetrics(stat: SyncStats) {
+        display.asyncExec {
+            val item = getItemFor(stat.table)
+            if (stat.metrics.isEmpty() || stat.metrics == "0 / 0") {
+                if (table.selectionIndex != currentRow) {
+                    table.setSelection(currentRow)
+                }
+            }
+            item.setText(4, stat.metrics)
+        }
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    fun processError(tableName: String, error: Throwable) {
+        display.asyncExec {
+            errors++
+            val item = getItemFor(tableName)
+            item.background = display.getSystemColor(SWT.COLOR_RED)
+        }
     }
 
     fun asyncLoadTableInfo() {
