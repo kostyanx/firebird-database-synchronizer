@@ -107,7 +107,7 @@ class SyncService @Inject constructor(
         tableMetas.filter { it.primaryKey != null }.forEach { tableMeta ->
             val tableName = tableMeta.table.name
             MDC.put("table", tableName)
-            val syncMetrics = SyncStats(System.currentTimeMillis(), tableName, "0 / 0")
+            val syncMetrics = SyncStats(System.currentTimeMillis(), tableName, "")
             syncOptions.statListener(syncMetrics)
             try {
                 LOG.info("sync table: {}", tableName)

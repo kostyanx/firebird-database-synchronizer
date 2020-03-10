@@ -317,7 +317,7 @@ class SwtUiService constructor(
     fun processMetrics(stat: SyncStats) {
         display.asyncExec {
             val item = getItemFor(stat.table)
-            if (stat.metrics.isEmpty() || stat.metrics == "0 / 0") {
+            if (stat.metrics.isEmpty()) {
                 if (table.selectionIndex != currentRow) {
                     table.setSelection(currentRow)
                 }
