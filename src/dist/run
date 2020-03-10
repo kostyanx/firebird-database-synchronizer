@@ -3,5 +3,5 @@
 cd "$(dirname "$0")" || exit
 
 LAST_JAR="$(ls catcab-database-synchronizer-* | sort -V | tail -n 1)"
-java -Xmx512m -Dlog4j.configurationFile="log4j2.xml" -jar "$LAST_JAR"
+java -Xmx512m -Dlog4j.configurationFile="log4j2.xml" -jar "$LAST_JAR" "$@"
 
