@@ -18,7 +18,7 @@ class CmdUiService(
     }
 
     override fun start() {
-        executor.execute {
+        executor.submit {
             val tableMetas = syncService.getTableMetas()
             LOG.info("content to sync:")
             tableMetas.forEach { meta ->
@@ -34,8 +34,8 @@ class CmdUiService(
                 deactivateIndices = "--no-deactivate-indices" !in uiConfig.args && "-ndi" !in uiConfig.args,
                 deactivateTriggers = true
             ))
-            startShutdownService.shutdown()
-        }
+        }.get()
+        startShutdownService.shutdown()
     }
 
     override fun shutdown() {
