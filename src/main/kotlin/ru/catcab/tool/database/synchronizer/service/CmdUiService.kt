@@ -39,6 +39,6 @@ class CmdUiService(
     }
 
     override fun shutdown() {
-
+        executor.shutdown()
     }
 }
