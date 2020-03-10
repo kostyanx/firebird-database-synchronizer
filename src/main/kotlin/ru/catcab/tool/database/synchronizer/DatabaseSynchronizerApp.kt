@@ -4,12 +4,13 @@ import dagger.Component
 import ru.catcab.common.dagger.StartShutdownService
 import ru.catcab.tool.database.synchronizer.module.CommonModule
 import ru.catcab.tool.database.synchronizer.module.DbModule
+import ru.catcab.tool.database.synchronizer.module.UiModule
 import ru.catcab.tool.database.synchronizer.service.SyncService
 import ru.catcab.tool.database.synchronizer.service.UiService
 import javax.inject.Singleton
 
 @Singleton
-@Component(modules = [CommonModule::class, DbModule::class])
+@Component(modules = [CommonModule::class, DbModule::class, UiModule::class])
 interface DatabaseSynchronizerApp {
     fun syncService(): SyncService
     fun uiService(): UiService

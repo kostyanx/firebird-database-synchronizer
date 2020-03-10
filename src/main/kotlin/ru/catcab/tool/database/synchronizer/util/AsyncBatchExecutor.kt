@@ -52,7 +52,7 @@ open class AsyncBatchExecutor<T>(
         try {
             lastError?.also { throw it }
             if (onClose != null && lastError == null) {
-                executor.submit(Callable { runCatching(onClose) }).get().onFailure { throw it }
+                executor.submit(Callable { return@Callable runCatching(onClose).exceptionOrNull() }).get()?.also { throw it }
             }
         } finally {
             executor.shutdown()

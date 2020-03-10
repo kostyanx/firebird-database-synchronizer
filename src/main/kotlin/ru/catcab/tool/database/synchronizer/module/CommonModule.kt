@@ -11,7 +11,8 @@ import javax.inject.Singleton
 
 @Module
 class CommonModule(
-    private val config: Config
+    private val config: Config,
+    private val args: Array<String>
 ) {
     companion object { private val LOG = LoggerFactory.getLogger(DbModule::class.java)!! }
 
@@ -23,4 +24,7 @@ class CommonModule(
 
     @Provides @Singleton
     fun provideExecutorService(): ExecutorService = Executors.newSingleThreadExecutor()
+
+    @Provides @Singleton
+    fun provideArgs(): Array<String> = args
 }

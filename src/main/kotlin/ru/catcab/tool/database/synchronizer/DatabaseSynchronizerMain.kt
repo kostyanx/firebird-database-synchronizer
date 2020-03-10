@@ -19,7 +19,7 @@ object DatabaseSynchronizerMain {
         val config = Config.init("catcab-database-synchronizer.properties", DatabaseSynchronizer::class.java)
 
         val app = DaggerDatabaseSynchronizerApp.builder()
-            .commonModule(CommonModule(config))
+            .commonModule(CommonModule(config, args))
             .build()
 
         app.startShutdownService().scanApp(app).start()
