@@ -49,6 +49,12 @@ class SyncService @Inject constructor(
         private const val SELECT_FOREIGN_KEYS_SQL = "SELECT rtrim(R.RDB\$CONSTRAINT_NAME) AS CONSTRAINT_NAME" +
                 " FROM RDB\$RELATION_CONSTRAINTS R" +
                 " WHERE (R.RDB\$CONSTRAINT_TYPE='FOREIGN KEY')"
+        @Language("GenericSQL")
+        private const val SELECT_GENERATORS_SQL = "SELECT rtrim(RDB\$GENERATOR_NAME) as GENERATOR_NAME FROM RDB\$GENERATORS WHERE RDB\$SYSTEM_FLAG = 0"
+        @Language("GenericSQL")
+        private const val GET_GENERATOR_COUNTER_SQL = "SELECT GEN_ID({generator}, 0) as COUNTER FROM RDB\$DATABASE"
+        @Language("GenericSQL")
+        private const val SET_GENERATOR_COUNTER_SQL = "SET GENERATOR {generator} TO {counter}"
     }
 
     fun getTableMetas() = srcDb.executeQueryAc { it.getTableMetas() }!!
@@ -79,6 +85,9 @@ class SyncService @Inject constructor(
         srcDb.connectionProxy.use { srcConn ->
             dstDb.connectionProxy.use { dstConn ->
                 dstDb.connectionProxy.use { dstConnUpdate ->
+                    LOG.info("update generator values")
+                    updateGenerators(srcConn, dstConnUpdate)
+                    LOG.info("start data sync")
                     sync(srcConn, dstConn, dstConnUpdate, tableMetas, syncOptions)
                 }
             }
@@ -96,18 +105,19 @@ class SyncService @Inject constructor(
             LOG.warn("table without primary key will not be processed: {}", it.table.name)
         }
         tableMetas.filter { it.primaryKey != null }.forEach { tableMeta ->
-            MDC.put("table", tableMeta.table.name)
-            val syncMetrics = SyncStats(System.currentTimeMillis(), tableMeta.table.name, "0 / 0")
+            val tableName = tableMeta.table.name
+            MDC.put("table", tableName)
+            val syncMetrics = SyncStats(System.currentTimeMillis(), tableName, "0 / 0")
             syncOptions.statListener(syncMetrics)
             try {
+                LOG.info("sync table: {}", tableName)
                 syncTable(tableMeta, dstConn, srcConn, dstConnUpdate, syncOptions, syncMetrics)
             } catch (e: Throwable) {
-                syncOptions.errorListener(tableMeta.table.name, e)
-                LOG.error("sync table ${tableMeta.table.name} error:", e)
+                syncOptions.errorListener(tableName, e)
+                LOG.error("sync table $tableName error:", e)
             } finally {
                 MDC.remove("table")
             }
-
         }
     }
 
@@ -164,8 +174,32 @@ class SyncService @Inject constructor(
         }
     }
 
+    private fun updateGenerators(srcConn: ConnectionProxy, dstConn: ConnectionProxy) {
+        for (generator in srcConn.getGenerators()) {
+            val counter = srcConn.getGeneratorValue(generator)
+            LOG.debug("set generator {} counter to {}", generator, counter)
+            dstConn.setGeneratorValue(generator, counter)
+        }
+    }
+
     private fun ConnectionProxy.getForeignKeys(): List<String> {
         return executeQueryList(SELECT_FOREIGN_KEYS_SQL, listOf<Any>()) { it.getString(1) }
+    }
+
+    private fun ConnectionProxy.getGenerators(): List<String> {
+        return executeQueryList(SELECT_GENERATORS_SQL, listOf<Any>()) { it.getString(1) }
+    }
+
+    private fun ConnectionProxy.getGeneratorValue(name: String): Long {
+        return executeQuery(GET_GENERATOR_COUNTER_SQL.replace("{generator}", name), listOf<Any>(), TypedResultSetProcessor { rs ->
+            rs.next()
+            return@TypedResultSetProcessor rs.getLong(1)
+        })
+    }
+
+    private fun ConnectionProxy.setGeneratorValue(name: String, counter: Long) {
+        val sql = SET_GENERATOR_COUNTER_SQL.replace("{generator}", name).replace("{counter}", counter.toString())
+        executeUpdate(sql, listOf<Any>())
     }
 
     private fun DatabaseMetaData.getTables(): List<Table> {
